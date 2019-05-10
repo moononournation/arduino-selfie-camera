@@ -29,13 +29,56 @@
 ST7789 tft = ST7789();
 sensor_t *s;
 int i = 0;
-int file_idx = 1;
 char buff[256];
 camera_fb_t *fb = NULL;
 
 void setup()
 {
   Serial.begin(115200);
+
+  SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
+
+  tft.begin();
+  tft.invertDisplay(true);
+  tft.setRotation(0);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextSize(1);
+  tft.drawString("ESP32 Digital Camera", 70, 0);
+
+  if (!SD.begin(SDCARA_CS)) {
+    tft.drawString("SD Init Fail!", 0, 208);
+    Serial.println("SD Init Fail!");
+  } else {
+    snprintf(buff, sizeof(buff), "SD Init Pass Type: %d Size: %lu", SD.cardType(), SD.cardSize() / 1024 / 1024);
+    tft.drawString(buff, 0, 212);
+    Serial.println(buff);
+
+    File file = SD.open("/DCIM");
+    if (!file) {
+      Serial.println("Create /DCIM");
+      SD.mkdir("/DCIM");
+    } else {
+      Serial.println("Found /DCIM");
+      file.close();
+    }
+    file = SD.open("/DCIM/100ESPDC");
+    if (!file) {
+      Serial.println("Create /DCIM/100ESPDC");
+      SD.mkdir("/DCIM/100ESPDC");
+    } else {
+      Serial.println("Found /DCIM/100ESPDC");
+      file.close();
+    }
+
+    xTaskCreate(
+      findNextFileIdx,       /* Task function. */
+      "FindNextFileIdxTask", /* String with name of task. */
+      10000,                 /* Stack size in bytes. */
+      NULL,                  /* Parameter passed as input of the task */
+      1,                     /* Priority of the task. */
+      NULL);                 /* Task handle. */
+  }
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -79,60 +122,56 @@ void setup()
   s->set_gainceiling(s, GAINCEILING_128X);
   s->set_aec2(s, 1);
   s->set_denoise(s, 1);
-  //s->set_hmirror(s, 1);
+  s->set_hmirror(s, 1);
   //s->set_vflip(s, 1);
   s->set_framesize(s, PREVIEW_SIZE);
   s->set_pixformat(s, PIXFORMAT_RGB565);
-
-  SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
-
-  tft.begin();
-  tft.invertDisplay(true);
-  tft.setRotation(0);
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextSize(1);
-  tft.drawString("ESP32 Digital Camera", 70, 0);
-
-  if (!SD.begin(SDCARA_CS)) {
-    tft.drawString("SD Init Fail!", 0, 208);
-    Serial.println("SD Init Fail!");
-  } else {
-    snprintf(buff, sizeof(buff), "SD Init Pass Type: %d Size: %lu", SD.cardType(), SD.cardSize() / 1024 / 1024);
-    tft.drawString(buff, 0, 212);
-    Serial.println(buff);
-
-    File file = SD.open("/DCIM");
-    if (!file) {
-      Serial.println("Create /DCIM");
-      SD.mkdir("/DCIM");
-    } else {
-      Serial.println("Found /DCIM");
-      file.close();
-    }
-    file = SD.open("/DCIM/100ESPDC");
-    if (!file) {
-      Serial.println("Create /DCIM/100ESPDC");
-      SD.mkdir("/DCIM/100ESPDC");
-    } else {
-      Serial.println("Found /DCIM/100ESPDC");
-      file.close();
-    }
-  }
 }
 
-void findNextFileIdx() {
+void findNextFileIdx( void * parameter ) { // TODO: revise ugly code
   File file;
-  while (true) {
-    snprintf(buff, sizeof(buff), "/DCIM/100ESPDC/DSC%05D.JPG\n", file_idx);
+  for (int k = 1000; k <= 30000; k += 1000) {
+    snprintf(buff, sizeof(buff), "/DCIM/100ESPDC/DSC%05D.JPG\n", k);
     file = SD.open(buff);
     if (file) {
-      //Serial.printf("Found %s\n", buff);
+      Serial.printf("Found %s\n", buff);
       file.close();
-      file_idx++;
     } else {
-      Serial.printf("Next file: %s\n", buff);
-      return;
+      Serial.printf("Not found %s\n", buff);
+      k -= 1000;
+      for (int h = 100; h <= 1000; h += 100) {
+        snprintf(buff, sizeof(buff), "/DCIM/100ESPDC/DSC%05D.JPG\n", k + h);
+        file = SD.open(buff);
+        if (file) {
+          Serial.printf("Found %s\n", buff);
+          file.close();
+        } else {
+          Serial.printf("Not found %s\n", buff);
+          h -= 100;
+          for (int t = 10; t <= 100; t += 10) {
+            snprintf(buff, sizeof(buff), "/DCIM/100ESPDC/DSC%05D.JPG\n", k + h + t);
+            file = SD.open(buff);
+            if (file) {
+              Serial.printf("Found %s\n", buff);
+              file.close();
+            } else {
+              Serial.printf("Not found %s\n", buff);
+              t -= 10;
+              for (int d = 1; d <= 10; d++) {
+                snprintf(buff, sizeof(buff), "/DCIM/100ESPDC/DSC%05D.JPG\n", k + h + t + d);
+                file = SD.open(buff);
+                if (file) {
+                  Serial.printf("Found %s\n", buff);
+                  file.close();
+                } else {
+                  Serial.printf("Next file: %s\n", buff);
+                  vTaskDelete( NULL );
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -141,16 +180,18 @@ void snap() {
   s->set_pixformat(s, PIXFORMAT_JPEG);
   s->set_framesize(s, FRAMESIZE_UXGA);
   s->set_hmirror(s, 0);
-  for (uint8_t gs = 0; gs < 250; gs += 10) {
+  Serial.println("Wait camera stable fading start");
+  for (uint8_t gs = 0; gs < 252; gs += 7) {
     tft.fillRect(0, 32, 240, 176, tft.color565(gs, gs, gs));
   }
-  tft.fillRect(0, 32, 240, 176, TFT_WHITE);
+  Serial.println("Wait camera stable fading end");
   fb = esp_camera_fb_get();
+  tft.fillRect(0, 32, 240, 176, TFT_WHITE);
 
   if (!fb) {
     Serial.println("Camera capture JPG failed");
   } else {
-    findNextFileIdx();
+    //findNextFileIdx();
     File file = SD.open(buff, FILE_WRITE);
     if (file.write(fb->buf, fb->len)) {
       snprintf(buff, sizeof(buff), "File written: %luKB\n%s", fb->len / 1024, file.name());
@@ -178,7 +219,7 @@ void loop()
   if (i == 1) {
     tft.setTextSize(2);
     tft.drawString("3", 116, 12);
-    findNextFileIdx();
+    //findNextFileIdx();
   } else if (i == 11) {
     tft.setTextSize(2);
     tft.drawString("2", 116, 12);
@@ -193,7 +234,7 @@ void loop()
 
     tft.setTextSize(2);
     tft.drawString("Reset to snap again!", 0, 12);
-  } else if (i == 600) {
+  } else if (i == 300) {
     tft.end();
     esp_deep_sleep_start();
   } else {
